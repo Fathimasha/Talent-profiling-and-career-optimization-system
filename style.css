@@ -20,7 +20,19 @@
 html, body, [class*="css"] {
     font-family: 'Inter', sans-serif;
 }
+.ats-action-card,
+.ats-tip-card,
+.ats-section-card,
+.ats-kw-card,
+.ats-check-row {
+    color: #e2e8f0 !important;
+}
 
+.ats-tip-text,
+.ats-check-detail,
+.ats-bar-label {
+    color: #cbd5e1 !important;
+}
 .stApp {
     background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #0f172a 100%);
 }
