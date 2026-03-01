@@ -16,3 +16,4 @@ This project implements **Hybrid Similarity** and **Deep Learning** for resume a
    `streamlit run app.py`
 
 *Note: The first run will take a few minutes to download the 'all-MiniLM-L6-v2' model.*
+Testing feature branch workflow
