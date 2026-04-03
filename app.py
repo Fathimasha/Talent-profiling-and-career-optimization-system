@@ -10,18 +10,7 @@ import spacy
 from sentence_transformers import SentenceTransformer, util
 from transformers import pipeline
 from skill_extractor import extract_skills_from_pdf
-
-try:
-    import joblib
-    from textblob import TextBlob
-    from xgboost import XGBClassifier  # noqa: F401
-
-    HAS_FAKE_JOB_DEPS = True
-except ImportError:
-    joblib = None
-    TextBlob = None
-    XGBClassifier = None
-    HAS_FAKE_JOB_DEPS = False
+from fakeconsultancies import predict_consultancy
 def load_css(file_name):
     with open(file_name) as f:
         st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
@@ -114,6 +103,13 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
+    st.markdown("---")
+    selected_page = st.radio(
+        "Navigation",
+        ["Career Guidance", "Fake Jobs & Consultancies"],
+        index=0,
+    )
+
 # ── Data Loading ──
 @st.cache_data
 def load_data():
@@ -153,6 +149,127 @@ if USE_SEMANTIC and model is not None:
         convert_to_numpy=True,
         show_progress_bar=False,
     )
+
+# ── Alternate Page: Fake Jobs & Consultancies ──
+if "selected_page" in globals() and selected_page == "Fake Jobs & Consultancies":
+    # Page hero
+    # Page hero (only for consultancies page now)
+    st.markdown(
+        """
+<div class="hero-container">
+    <div class="hero-title">Consultancies Checker</div>
+    <div class="hero-subtitle">
+        Check consultancy names and messages for potential fraud risk before you apply.
+    </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    # Consultancy Legitimacy Checker (only on this page)
+    st.markdown(
+        """
+<div class="section-header">
+    <div class="section-icon">🏢</div>
+    <div class="section-title">Consultancy Legitimacy Checker</div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    st.markdown(
+        '<p style="color:#94a3b8; font-size:0.88rem; margin-bottom:1rem;">'
+        "Provide details about the consultancy to estimate whether it looks <strong>Real</strong> or <strong>Fake</strong>. "
+        "If you have trained the advanced model, it will use both the name and the message content plus whether they ask for fees."
+        "</p>",
+        unsafe_allow_html=True,
+    )
+
+    consultancy_name = st.text_input(
+        "Consultancy / agency name",
+        placeholder="e.g. Global Tech Solutions Pvt Ltd",
+        key="consultancy_name_input",
+    )
+
+    consultancy_desc = st.text_area(
+        "Message / description from consultancy (optional)",
+        placeholder="Paste email, WhatsApp message, or about text from the consultancy here...",
+        height=140,
+        key="consultancy_desc_input",
+    )
+
+    asks_fee = st.checkbox(
+        "This consultancy is asking for registration / joining / processing fees",
+        key="consultancy_asks_fee",
+    )
+
+    if st.button("Check Consultancy"):
+        name = consultancy_name.strip()
+
+        if not name:
+            st.error("Please enter a consultancy name to analyze.")
+        else:
+            result = predict_consultancy(
+                name,
+                description=consultancy_desc or "",
+                asks_fee=asks_fee,
+            )
+
+            # Handle "name only but not found in database" case
+            if "error" in result:
+                st.warning(result["error"])
+            else:
+                label = result["label"]
+                color = "#f97373" if label == "Fake Consultancy" else "#22c55e"
+
+                # Unified confidence score (0–100) from either DB lookup or ML model
+                confidence = result.get("confidence")
+
+                # Backwards fallback if confidence is missing but per-class probs exist
+                if confidence is None:
+                    fake_prob = result.get("fake_probability")
+                    real_prob = result.get("real_probability")
+                    if label == "Fake Consultancy" and fake_prob is not None:
+                        confidence = fake_prob
+                    elif label == "Real Consultancy" and real_prob is not None:
+                        confidence = real_prob
+
+                if confidence is None:
+                    confidence = 0.0
+
+                st.markdown(
+                    f"""
+<div class="card-improve">
+<h4>Consultancy Assessment</h4>
+
+<p style="font-size:0.9rem; margin-bottom:0.5rem;">
+This consultancy is assessed as:
+<span style="font-weight:600; color:{color};">{label}</span>
+&nbsp;(confidence: {confidence:.0f}%)
+</p>
+
+<p style="font-size:0.8rem; color:#94a3b8; margin-bottom:0.5rem;">
+Source: {result.get("source","ML Model")}
+</p>
+
+</div>
+""",
+                    unsafe_allow_html=True,
+                )
+
+    st.markdown(
+        """
+<div style="text-align:center; padding:1rem 0 2rem 0;">
+    <div style="font-size:0.82rem; color:#475569;">
+        Built with Streamlit & Sentence-BERT • AI Career Compass Pro
+    </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+    # Stop here so the Career Guidance page content below does not render
+    st.stop()
 
 
 def compute_text_overlap(text_a, text_b):
@@ -636,85 +753,6 @@ def get_role_resources(job_title: str):
     return ROLE_RESOURCES.get(key, [])
 
 
-# ── Fake job detection helpers ──
-FAKE_MODEL_PATH = "models/fake_job_xgb.pkl"
-
-_FAKE_FRAUD_WORDS = [
-    "registration fee",
-    "processing fee",
-    "urgent hiring",
-    "no experience",
-    "whatsapp",
-    "telegram",
-    "easy money",
-    "work from home",
-    "limited slots",
-    "guaranteed income",
-    "earn per day",
-    "earn per week",
-    "instant joining",
-]
-
-
-def _extract_linguistic_features_for_job(text: str):
-    text = str(text or "").lower()
-    fraud_count = sum(text.count(w) for w in _FAKE_FRAUD_WORDS)
-    length = len(text.split())
-
-    if TextBlob is None:
-        return [
-            fraud_count * 10,
-            length / 100,
-            0.0,
-            0.0,
-        ]
-
-    blob = TextBlob(text)
-    return [
-        fraud_count * 10,
-        length / 100,
-        blob.sentiment.polarity * 5,
-        blob.sentiment.subjectivity * 5,
-    ]
-
-
-def _build_fake_feature_vector(description: str):
-    """Build feature vector matching the training pipeline in fakejob.py."""
-    if not USE_SEMANTIC or model is None:
-        return None
-    emb = model.encode([description], convert_to_numpy=True)[0]
-    ling_feats = _extract_linguistic_features_for_job(description)
-    return np.concatenate([emb, ling_feats])
-
-
-@st.cache_resource
-def load_fake_job_model():
-    if not HAS_FAKE_JOB_DEPS:
-        return None
-    if not os.path.exists(FAKE_MODEL_PATH):
-        return None
-    try:
-        clf = joblib.load(FAKE_MODEL_PATH)
-    except Exception:
-        return None
-    return clf
-
-
-def predict_fake_probability(description: str):
-    """Return probability that a job posting is fraudulent (1 = fake, 0 = real)."""
-    vec = _build_fake_feature_vector(description)
-    if vec is None:
-        return None
-    clf = load_fake_job_model()
-    if clf is None:
-        return None
-    try:
-        proba = clf.predict_proba(vec.reshape(1, -1))[0, 1]
-    except Exception:
-        return None
-    return float(proba)
-
-
 # ── Hero Section ──
 st.markdown(
     """
@@ -810,7 +848,9 @@ with st.spinner("Analyzing your resume..."):
         job_skill_list = clean_split_skills(job_skills)
         if len(job_skill_list) == 0:
             return 0
-        common = set(resume_skills).intersection(set(job_skill_list))
+        norm_resume = {normalize_skill_name(sk) for sk in resume_skills}
+        norm_job = {normalize_skill_name(sk) for sk in job_skill_list}
+        common = norm_resume.intersection(norm_job)
         return len(common) / len(job_skill_list)
 
     jobs_df_clean["skill_score"] = jobs_df_clean["Skills"].apply(compute_skill_score)
@@ -838,7 +878,9 @@ with st.spinner("Analyzing your resume..."):
 
     def skill_gap(job_skills):
         job_skill_list = clean_split_skills(job_skills)
-        return sorted(list(set(job_skill_list) - set(resume_skills)))
+        norm_resume = {normalize_skill_name(sk) for sk in resume_skills}
+        missing = [sk for sk in job_skill_list if normalize_skill_name(sk) not in norm_resume]
+        return sorted(list(set(missing)))
 
     top_k["missing_skills"] = top_k["Skills"].apply(skill_gap)
 
@@ -850,7 +892,6 @@ def generate_resume_suggestions(resume_text, resume_skills, top_k):
         "content": [],
         "formatting": [],
     }
-
     text_lower = str(resume_text).lower()
 
     # A) Missing Technical Skills
@@ -1388,10 +1429,11 @@ for _, row in top_k.iterrows():
         )
     else:
         job_skill_list = clean_split_skills(row["Skills"])
+        norm_resume = {normalize_skill_name(sk) for sk in resume_skills}
         matched_html = ""
         missing_html = ""
-        for s in sorted(job_skill_list):
-            if s in resume_skills:
+        for s in sorted(set(job_skill_list)):
+            if normalize_skill_name(s) in norm_resume:
                 matched_html += (
                     f'<span class="skill-badge matched">{s.title()}</span>'
                 )
@@ -1832,72 +1874,6 @@ if ats_analyze:
         """,
             unsafe_allow_html=True,
         )
-
-# ── Fake Job Posting Detector ──
-st.markdown(
-    """
-<div class="section-header">
-    <div class="section-icon">🚫</div>
-    <div class="section-title">Fake Job Posting Detector</div>
-</div>
-""",
-    unsafe_allow_html=True,
-)
-
-st.markdown(
-    '<p style="color:#94a3b8; font-size:0.88rem; margin-bottom:1rem;">'
-    "Paste a job description to estimate how likely it is to be fraudulent, based on the Kaggle fake job postings dataset."
-    "</p>",
-    unsafe_allow_html=True,
-)
-
-if not HAS_FAKE_JOB_DEPS:
-    st.warning(
-        "Fake job detection is disabled because required libraries are missing. "
-        "Install `xgboost`, `textblob`, and `joblib` to enable it.",
-        icon="⚠️",
-    )
-elif not USE_SEMANTIC or model is None:
-    st.warning(
-        "Fake job detection requires the Sentence-BERT model. "
-        "Install `sentence-transformers` to enable it.",
-        icon="⚠️",
-    )
-else:
-    job_description = st.text_area(
-        "Paste a job description",
-        placeholder="Paste the full text of a job posting here...",
-        height=180,
-    )
-    if st.button("Analyze Job Posting"):
-        if not job_description.strip():
-            st.error("Please paste a non-empty job description.")
-        else:
-            proba = predict_fake_probability(job_description)
-            if proba is None:
-                st.error(
-                    "Fake job model file not found or could not be loaded. "
-                    "Train it by running `python fakejob.py` to create `models/fake_job_xgb.pkl`."
-                )
-            else:
-                label = "Likely Fake" if proba >= 0.5 else "Likely Real"
-                color = "#f97373" if proba >= 0.5 else "#22c55e"
-                st.markdown(
-                    f"""
-<div class="card-improve">
-    <h4>Risk Assessment</h4>
-    <p style="font-size:0.9rem; margin-bottom:0.5rem;">
-        Estimated probability of being a fake posting:
-        <span style="font-weight:600; color:{color};">{proba:.1%}</span>
-        &nbsp;→ <strong>{label}</strong>
-    </p>
-    <p style="font-size:0.8rem; color:#94a3b8;">
-        This score is based on language patterns, sentiment, and suspicious keywords learned from historical fake job postings.
-    </p>
-</div>
-""",
-                    unsafe_allow_html=True,
-                )
 
 # ── Footer ──
 st.markdown("---")
