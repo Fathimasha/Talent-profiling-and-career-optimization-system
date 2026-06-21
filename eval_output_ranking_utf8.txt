@@ -1,0 +1,10 @@
+﻿Loading jobs dataset...
+Generating Job Embeddings with SBERT...
+Evaluating Recommendation System (Precision@3, Recall@3, F1@3, NDCG@3)...
+
+--- Recommendation Engine Evaluation Results ---
+Sample Size Evaluated: 89 simulated resumes
+Average Precision@3: 36.33%
+Average Recall@3: 74.91%
+Average F1@3: 47.27%
+Average NDCG@3: 65.56%
