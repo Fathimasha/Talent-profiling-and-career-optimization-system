@@ -76,7 +76,7 @@ AI-Career-Compass-Pro/
 ## 1️⃣ Clone the Repository
 
 ```bash
-git clone https://github.com/your-username/AI-Career-Compass-Pro.git
+git clone https://github.com/Fathimasha/Talent-profiling-and-career-optimization-system.git
 ```
 
 ```bash
